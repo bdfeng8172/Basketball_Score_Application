@@ -1,0 +1,41 @@
+# === Core Python libraries for the Basketball Score App ===
+
+# Deep learning and computer vision
+torch>=2.0         # PyTorch for YOLO
+ultralytics>=8.0   # YOLOv8 detection models
+
+# OpenCV for webcam input and drawing
+opencv-python
+
+# Flask web framework for streaming
+Flask
+
+# Tracker dependencies
+loguru             # Logger for ByteTrack
+lap                # Linear Assignment Problem solver (Hungarian algo)
+cython_bbox        # Fast IoU calculations for trackers
+scipy              # Some trackers use extra SciPy utilities
+numpy              # Required for all matrix operations
+
+# If you ever use torch CUDA on Windows, you may need:
+# torchvision
+
+# === Notes for new developers ===
+# Before installing, create a virtual environment:
+#   python -m venv venv
+# Activate it:
+#   On Windows:
+#     venv\Scripts\activate
+
+#                                               vv ** To install all packages: ** vv
+#
+#                                              **  pip install -r requirements.txt **
+#
+#                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+#
+# To run the app:
+#   python app.py
+#
+# If you hit compiler errors (Windows):
+#   - Install Visual Studio Build Tools (C++ compiler)
+#   - Install a compatible version of torch with CUDA if needed

@@ -44,9 +44,16 @@ def detect_and_stream():
                 detections.append([x1, y1, x2, y2, score])
         
 
-        detections = np.array(detections)
+        detections = np.array(detections, dtype=np.float32)
 
-        tracked_players = tracker.update(detections, frame)
+        img_info = {
+            'height': frame.shape[0],
+            'width': frame.shape[1]
+        }
+
+        img_size = (frame.shape[0], frame.shape[1])
+
+        tracked_players = tracker.update(detections, img_info, img_size)
 
         current_detection_count = len(detections)
 

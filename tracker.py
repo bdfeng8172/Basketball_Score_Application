@@ -16,20 +16,15 @@ class PlayerTracker:
         self.tracker = BYTETracker(default_args)
         self.tracked_ids = set()
 
-    def update(self, detections, frame):
-        img_info = {
-            'height': frame.shape[0],
-            'width': frame.shape[1],
-            'raw_img': frame
-        }
-        img_size = (frame.shape[1], frame.shape[0])  # (W, H)
+    def update(self, detections, img_info, img_size):
 
-        # Ensure detections is a numpy array
-        # if not isinstance(detections, np.ndarray):
-        #     detections = np.array(detections)
 
-        if not isinstance(detections, torch.Tensor):
-            detections = torch.from_numpy(detections).float().to('cuda')
+            # Ensure detections is a numpy array
+            # if not isinstance(detections, np.ndarray):
+            #     detections = np.array(detections)
+
+            # if not isinstance(detections, torch.Tensor):
+            #     detections = torch.from_numpy(detections).float().to('cuda')
 
 
         online_targets = self.tracker.update(

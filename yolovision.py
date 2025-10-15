@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 from tracker import PlayerTracker
+from collections import deque
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(f"Using device: {device}")
@@ -13,114 +14,118 @@ model = YOLO("yolov8l.pt")
 model.to(device)
 tracker = PlayerTracker()
 
-print(model.device) 
-
-mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
-pose = mp_pose.Pose(
-    static_image_mode=False,      
-    model_complexity=1,           
-    smooth_landmarks=True,
-    enable_segmentation=False,
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5
-)
+mp_pose = mp.solutions.pose
 
-# Load webcam
-cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+# EMA smoothing factor (higher = more responsive, lower = smoother)
+ALPHA = 0.1
 
-prev_detection_count = 0
+# Store previous smoothed angles
+smoothed_angles = {
+    'left_elbow': None,
+    'left_wrist': None,
+    'left_knee': None,
+    'left_ankle': None,
+    'right_elbow': None,
+    'right_wrist': None,
+    'right_knee': None,
+    'right_ankle': None
+}
 
-def detect_and_stream():
-    global prev_detection_count
+#calculates the angle between three points a, b, c
+# a = left shoulder, b = left elbow, c = left wrist
+# left shoulder = [x1,y1,z1], left elbow = [x2,y2,z2], left wrist = [x3,y3,z3]
+# ba = a - b
+# ba = [x1 - x2, y1 - y2, z1 - z2]
+# bc = c - b
+# bc = [x3 - x2, y3 - y2, z3 - z2]
+# cosine_angle = (ba (dot) bc) / (||ba|| * ||bc||)
+def calculate_angle(a, b, c):
+    a, b, c = np.array(a), np.array(b), np.array(c)
+    ba = a - b
+    bc = c - b
+    cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
+    angle = np.arccos(np.clip(cosine_angle, -1.0, 1.0))
+    return np.degrees(angle)
 
-    while True:
-        success, frame = cap.read()
-        if not success:
+#uses exponential smoothing by storing the average of previous values
+def smooth_angle(name, new_angle):
+    prev = smoothed_angles[name]
+    if prev is None:
+        smoothed_angles[name] = new_angle
+    else:
+        smoothed_angles[name] = ALPHA * new_angle + (1 - ALPHA) * prev
+    return smoothed_angles[name]
+
+cap = cv2.VideoCapture(0) 
+#begins pose detection
+with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as pose:
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
             break
 
-        # have a rgb copy for Mediapipe
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = pose.process(image)
+        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
-        # Run YOLO
-        results = model.predict(frame, verbose=False)[0]
-        detections = []
+        if results.pose_landmarks:
+            lm = results.pose_landmarks.landmark
+            h, w, _ = image.shape
 
-        for box in results.boxes:
-            cls_id = int(box.cls[0].cpu().item())
-            label = model.names[cls_id]
+            #grabs coordinates in 3D space (x,y,z)
+            def get_coords(idx):
+                return [lm[idx].x, lm[idx].y, lm[idx].z]
 
-            if label in ["person", "sports ball"]:
-                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                score = float(box.conf[0].cpu().item())
-                w = x2 - x1
-                h = y2 - y1
-                detections.append([x1, y1, w, h, score, cls_id])
+            # all left ligaments
+            left_shoulder, left_elbow, left_wrist = get_coords(11), get_coords(13), get_coords(15)
+            left_hip, left_knee, left_ankle = get_coords(23), get_coords(25), get_coords(27)
+            left_heel, left_foot = get_coords(29), get_coords(31)
 
-        if len(detections) > 0:
-            detections = np.array(detections, dtype=np.float32)
-            dets_for_tracker = detections[:, :5]
-            cls_ids = detections[:, 5].astype(int)
-        else:
-            dets_for_tracker = np.empty((0, 5), dtype=np.float32)
-            cls_ids = np.empty((0,), dtype=int)
+            # all right ligaments
+            right_shoulder, right_elbow, right_wrist = get_coords(12), get_coords(14), get_coords(16)
+            right_hip, right_knee, right_ankle = get_coords(24), get_coords(26), get_coords(28)
+            right_heel, right_foot = get_coords(30), get_coords(32)
 
-        img_info = {
-            'height': frame.shape[0],
-            'width': frame.shape[1],
-        }
-        img_size = (frame.shape[1], frame.shape[0])
+            # run calculate angle function for each joint
+            angles = {
+                'left_elbow': calculate_angle(left_shoulder, left_elbow, left_wrist),
+                'left_wrist': calculate_angle(left_elbow, left_wrist, left_foot),
+                'left_knee': calculate_angle(left_hip, left_knee, left_ankle),
+                'left_ankle': calculate_angle(left_knee, left_ankle, left_heel),
 
-        tracked_objects = tracker.update(dets_for_tracker, img_info, img_size, cls_ids)
+                'right_elbow': calculate_angle(right_shoulder, right_elbow, right_wrist),
+                'right_wrist': calculate_angle(right_elbow, right_wrist, right_foot),
+                'right_knee': calculate_angle(right_hip, right_knee, right_ankle),
+                'right_ankle': calculate_angle(right_knee, right_ankle, right_heel)
+            }
 
-        current_detection_count = len(detections)
-        if current_detection_count != prev_detection_count:
-            print(f"Detections: {current_detection_count}, Tracked: {tracked_objects}")
-            prev_detection_count = current_detection_count
+            # # now apply smoothing to angles continuously
+            # for key in angles:
+            #     angles[key] = smooth_angle(key, angles[key])
 
-        # Label and draw tracked objects
-        for tid, x1, y1, x2, y2, cls_id in tracked_objects:
-            if cls_id == 0:
-                color = (255, 0, 0)
-                label = "Person"
-            elif cls_id == 32:
-                color = (0, 255, 255)
-                label = "Ball"
-            else:
-                color = (0, 0, 255)
-                label = f"Class {cls_id}"
+            #function that draws the text for each joiny
+            def draw_text(label, coords, value, color):
+                pos = tuple((np.array(coords[:2]) * [w, h]).astype(int))
+                cv2.putText(image, f'{label}: {int(value)}°', pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2, cv2.LINE_AA)
 
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(frame, f'{label} {tid}', (x1, y1 - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            # draw angles for left and right joints
+            draw_text('L-Elbow', left_elbow, angles['left_elbow'], (0, 255, 0))
+            draw_text('L-Wrist', left_wrist, angles['left_wrist'], (255, 255, 0))
+            draw_text('L-Knee', left_knee, angles['left_knee'], (255, 0, 0))
+            draw_text('L-Ankle', left_ankle, angles['left_ankle'], (0, 0, 255))
 
-        # run Mediapipe Pose
-        pose_results = pose.process(rgb_frame)
+            draw_text('R-Elbow', right_elbow, angles['right_elbow'], (0, 255, 0))
+            draw_text('R-Wrist', right_wrist, angles['right_wrist'], (255, 255, 0))
+            draw_text('R-Knee', right_knee, angles['right_knee'], (255, 0, 0))
+            draw_text('R-Ankle', right_ankle, angles['right_ankle'], (0, 0, 255))
 
-        if pose_results.pose_landmarks:
-            # draw pose skeleton
-            mp.solutions.drawing_utils.draw_landmarks(
-                frame, pose_results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+            # Draw full skeleton
+            mp_drawing.draw_landmarks(image, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
 
-            # calculate center of shoulders and hips
-            lm = pose_results.pose_landmarks.landmark
+        cv2.imshow('Pose Angles (Left + Right, Smoothed)', image)
+        if cv2.waitKey(5) & 0xFF == ord('q'):
+            break
 
-            left_shoulder = lm[mp_pose.PoseLandmark.LEFT_SHOULDER]
-            right_shoulder = lm[mp_pose.PoseLandmark.RIGHT_SHOULDER]
-            left_hip = lm[mp_pose.PoseLandmark.LEFT_HIP]
-            right_hip = lm[mp_pose.PoseLandmark.RIGHT_HIP]
-
-            cx = int(frame.shape[1] * (left_shoulder.x + right_shoulder.x + left_hip.x + right_hip.x) / 4)
-            cy = int(frame.shape[0] * (left_shoulder.y + right_shoulder.y + left_hip.y + right_hip.y) / 4)
-
-            cv2.circle(frame, (cx, cy), 8, (0, 255, 0), -1)
-            cv2.putText(frame, "Pose Center", (cx + 10, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
-        _, jpeg = cv2.imencode('.jpg', frame)
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
-
-    cap.release()
-    cv2.destroyAllWindows()
+cap.release()
+cv2.destroyAllWindows()

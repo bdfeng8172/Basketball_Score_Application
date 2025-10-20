@@ -5,7 +5,7 @@ import numpy as np
 from ultralytics import YOLO
 from tracker import PlayerTracker
 from collections import deque
-from form_analysis.basketball_FA import BasketballFormAnalysis
+from form_analysis.basketballFAmod import BasketballFormAnalysis
 
 # initialize form analyzer
 form_analyzer = BasketballFormAnalysis()
@@ -58,11 +58,8 @@ def smooth_angle(name, new_angle):
         smoothed_angles[name] = ALPHA * new_angle + (1 - ALPHA) * prev
     return smoothed_angles[name]
 
-video = "Basketball_vids/basketball_shot.mp4" 
+video = "basketball_shot.mp4"  # Replace with 0 for webcam input
 cap = cv2.VideoCapture(video)
-fps = cap.get(cv2.CAP_PROP_FPS)
-delay = int(1000 / fps)
-
 
 with mp_pose.Pose(min_detection_confidence=0.5,
                   min_tracking_confidence=0.5) as pose:
@@ -71,8 +68,7 @@ with mp_pose.Pose(min_detection_confidence=0.5,
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Loop video
-            continue
+            break
 
         # converts to RGB for MediaPipe processing
         image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -117,73 +113,9 @@ with mp_pose.Pose(min_detection_confidence=0.5,
             # apply smoothing
             for key in angles:
                 angles[key] = smooth_angle(key, angles[key])
-
             # perform form analysis
-            # Evaluate all positions continuously
-            positions = ["position_1", "position_2", "position_3"]
-            position_results = {pos: {"acceptable": False, "passable": False, "unacceptable": False} for pos in positions}
-            final_form_status = None  # "acceptable" / "passable" / "unacceptable"
-
-            # Perform sequential form analysis with custom logic
-            for i, pos in enumerate(positions):
-                overall_status, _ = form_analyzer.evaluate_position(smoothed_angles, pos)
-                position_results[pos][overall_status] = True
-
-                if pos == "position_1":
-                    # Always move on regardless of result
-                    continue
-
-                elif pos == "position_2":
-                    # If pos2 is unacceptable → shot is unacceptable; stop here
-                    if overall_status == "unacceptable":
-                        final_form_status = "unacceptable"
-                        break
-                    else:
-                        continue
-
-                elif pos == "position_3":
-                    # Extract each phase’s result (acceptable / passable / unacceptable)
-                    p1 = [k for k, v in position_results["position_1"].items() if v][0]
-                    p2 = [k for k, v in position_results["position_2"].items() if v][0]
-                    p3 = [k for k, v in position_results["position_3"].items() if v][0]
-
-
-                    #  If pos1 is unacceptable but pos2 & pos3 are passable/acceptable → passable
-                    if p1 == "unacceptable" and p2 in ["passable", "acceptable"] and p3 in ["passable", "acceptable"]:
-                        final_form_status = "passable"
-
-                    # If pos1 is passable/acceptable but pos2 is unacceptable → unacceptable
-                    elif p1 in ["passable", "acceptable"] and p2 == "unacceptable":
-                        final_form_status = "unacceptable"
-
-                    #  If pos3 is unacceptable → form unacceptable
-                    elif p3 == "unacceptable":
-                        final_form_status = "unacceptable"
-
-                    #  If pos3 is passable or acceptable → form passable
-                    elif p3 in ["passable", "acceptable"]:
-                        final_form_status = "passable"
-
-                    #  If all 3 are acceptable → form acceptable
-                    elif all(x == "acceptable" for x in [p1, p2, p3]):
-                        final_form_status = "acceptable"
-
-                    #  If more positions are acceptable than passable → acceptable
-                    else:
-                        all_results = [p1, p2, p3]
-                        if all_results.count("acceptable") > all_results.count("passable"):
-                            final_form_status = "acceptable"
-                        elif all_results.count("passable") >= all_results.count("acceptable"):
-                            final_form_status = "passable"
-                        else:
-                            final_form_status = "unacceptable"
-
-                    break  # Done evaluating all positions
-
-            # Print summary result for the entire form
-            if final_form_status:
-                print(f"\n FINAL FORM OUTPUT: {final_form_status.upper()}")
-
+            for position in ["position_1", "position_2", "position_3"]:
+                overall_status, joint_statuses = form_analyzer.evaluate_position(smoothed_angles, position)
 
             # function to draw text
             def draw_text(label, coords, value, color):
@@ -205,20 +137,20 @@ with mp_pose.Pose(min_detection_confidence=0.5,
             draw_text('R-Ankle', right_ankle, angles['right_ankle'], (0, 0, 255))
             draw_text('R-Shoulder', right_shoulder, angles['right_shoulder'], (255, 0, 255))
 
-            
+            # Draw full skeleton
             # After obtaining joint_feedback from form_analyzer
             overall_status, joint_feedback = form_analyzer.evaluate_position(smoothed_angles, "position_1")
 
-        # draw the pose skeleton (including colored segments)
+# Draw the pose skeleton with color-coded joints
             if results.pose_landmarks:
                 lm = results.pose_landmarks.landmark
                 h, w, _ = image.shape
 
-        # Helper function to convert Mediapipe coords to pixels
+    # Helper function to convert Mediapipe coords to pixels
                 def to_pixel_coords(landmark):
                     return int(landmark.x * w), int(landmark.y * h)
 
-        # Define pairs of landmarks (based on Mediapipe’s POSE_CONNECTIONS)
+    # Define pairs of landmarks (based on Mediapipe’s POSE_CONNECTIONS)
                 connections = [
                     (11, 13), (13, 15),   # Left arm
                     (12, 14), (14, 16),   # Right arm
@@ -263,7 +195,7 @@ with mp_pose.Pose(min_detection_confidence=0.5,
         cv2.imshow('Pose Angles (2D, Smoothed)', image)
 
         # Quit on 'q' key
-        if cv2.waitKey(delay) & 0xFF == ord('q'):
+        if cv2.waitKey(5) & 0xFF == ord('q'):
             break
 
 

@@ -1,22 +1,10 @@
 import mediapipe as mp
-import torch
 import cv2
 import numpy as np
-from ultralytics import YOLO
-from tracker import PlayerTracker
-from collections import deque
 from form_analysis.basketball_FA import BasketballFormAnalysis
 
 # initialize form analyzer
 form_analyzer = BasketballFormAnalysis()
-
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-print(f"Using device: {device}")
-
-
-model = YOLO("yolov8l.pt")
-model.to(device)
-tracker = PlayerTracker()
 
 mp_drawing = mp.solutions.drawing_utils
 mp_pose = mp.solutions.pose
@@ -63,6 +51,72 @@ cap = cv2.VideoCapture(video)
 fps = cap.get(cv2.CAP_PROP_FPS)
 delay = int(1000 / fps)
 
+# Track video completion
+total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+current_frame = 0
+video_completed = False
+final_results_printed = False
+
+# Store latest results for each position
+latest_position_results = {
+    "position_1": None,
+    "position_2": None,
+    "position_3": None
+}
+# Store best status achieved for each joint in each position (best status across all frames)
+best_position_details = {
+    "position_1": {},
+    "position_2": {},
+    "position_3": {}
+}
+# Track if all key joints were ever acceptable/passable simultaneously for each position
+best_simultaneous_overall = {
+    "position_1": None,
+    "position_2": None,
+    "position_3": None
+}
+latest_final_status = None
+
+# Status hierarchy: acceptable > passable > unacceptable > no data
+def get_better_status(status1, status2):
+    """Returns the better status between two statuses"""
+    if status1 is None:
+        return status2
+    if status2 is None:
+        return status1
+    hierarchy = {"acceptable": 3, "passable": 2, "unacceptable": 1, "no data": 0}
+    return status1 if hierarchy.get(status1, 0) >= hierarchy.get(status2, 0) else status2
+
+def calculate_overall_status_from_joints(joint_feedback):
+    """Calculate overall status from joint feedback using the same logic as formAnalysis"""
+    # Key joints determine overall evaluation (same as formAnalysis.py)
+    key_joints = [
+        "left_knee", "right_knee",
+        "left_elbow", "right_elbow",
+        "left_shoulder", "right_shoulder"
+    ]
+    key_statuses = [joint_feedback[j]["status"] for j in key_joints if j in joint_feedback]
+    
+    if not key_statuses:
+        return "unacceptable"
+    
+    if any(status == "unacceptable" for status in key_statuses):
+        return "unacceptable"
+    elif all(status == "acceptable" for status in key_statuses):
+        return "acceptable"
+    elif all(status in ["acceptable", "passable"] for status in key_statuses):
+        return "passable"
+    else:
+        return "unacceptable"
+
+def get_better_overall_status(status1, status2):
+    """Returns the better overall status between two statuses"""
+    if status1 is None:
+        return status2
+    if status2 is None:
+        return status1
+    hierarchy = {"acceptable": 3, "passable": 2, "unacceptable": 1}
+    return status1 if hierarchy.get(status1, 0) >= hierarchy.get(status2, 0) else status2
 
 with mp_pose.Pose(min_detection_confidence=0.5,
                   min_tracking_confidence=0.5) as pose:
@@ -71,8 +125,82 @@ with mp_pose.Pose(min_detection_confidence=0.5,
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
+            # Video finished - print final results if not already printed
+            if not final_results_printed and video_completed:
+                print("\n" + "="*50)
+                print("VIDEO ANALYSIS COMPLETE")
+                print("="*50)
+                # Print detailed results for each position
+                for pos in ["position_1", "position_2", "position_3"]:
+                    if best_position_details[pos]:
+                        print(f"\n{pos.upper()} Evaluation:")
+                        # Show individual joint statuses (best ever achieved)
+                        for joint, info in best_position_details[pos].items():
+                            status = info["status"]
+                            color_name = (
+                                "Green" if status == "acceptable" else
+                                "Yellow" if status == "passable" else
+                                "Red" if status == "unacceptable" else "Gray"
+                            )
+                            print(f"  {joint}: {status} ({color_name})")
+                        # Show overall status (best simultaneous status - all key joints at same time)
+                        if best_simultaneous_overall[pos]:
+                            print(f"→ Overall (simultaneous): {best_simultaneous_overall[pos].upper()}")
+                        else:
+                            print(f"→ Overall (simultaneous): UNACCEPTABLE")
+                
+                # Calculate final form status based on best simultaneous statuses achieved
+                p1_status = best_simultaneous_overall["position_1"] or "unacceptable"
+                p2_status = best_simultaneous_overall["position_2"] or "unacceptable"
+                p3_status = best_simultaneous_overall["position_3"] or "unacceptable"
+                
+                # If position 2 is unacceptable, shot is unacceptable
+                if p2_status == "unacceptable":
+                    final_form_status = "unacceptable"
+                # If all 3 positions are acceptable → acceptable
+                elif all(x == "acceptable" for x in [p1_status, p2_status, p3_status]):
+                    final_form_status = "acceptable"
+                # If 2 out of 3 positions are acceptable → passable
+                elif [p1_status, p2_status, p3_status].count("acceptable") == 2:
+                    final_form_status = "passable"
+                # If at least 2 positions are passable or better → passable
+                elif [p1_status, p2_status, p3_status].count("unacceptable") <= 1:
+                    final_form_status = "passable"
+                # Otherwise → unacceptable
+                else:
+                    final_form_status = "unacceptable"
+                
+                latest_final_status = final_form_status
+                print(f"\nFINAL FORM OUTPUT: {final_form_status.upper()}")
+                print("="*50 + "\n")
+                final_results_printed = True
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Loop video
+            current_frame = 0
+            video_completed = False
+            final_results_printed = False
+            # Reset position results for next cycle
+            latest_position_results = {
+                "position_1": None,
+                "position_2": None,
+                "position_3": None
+            }
+            best_position_details = {
+                "position_1": {},
+                "position_2": {},
+                "position_3": {}
+            }
+            best_simultaneous_overall = {
+                "position_1": None,
+                "position_2": None,
+                "position_3": None
+            }
+            latest_final_status = None
             continue
+        
+        current_frame += 1
+        # Check if we've reached the end of the video
+        if current_frame >= total_frames and not video_completed:
+            video_completed = True
 
         # converts to RGB for MediaPipe processing
         image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -126,63 +254,48 @@ with mp_pose.Pose(min_detection_confidence=0.5,
 
             # Perform sequential form analysis with custom logic
             for i, pos in enumerate(positions):
-                overall_status, _ = form_analyzer.evaluate_position(smoothed_angles, pos)
+                # Disable printing during playback - we'll print everything at the end
+                overall_status, joint_feedback = form_analyzer.evaluate_position(smoothed_angles, pos, print_output=False)
                 position_results[pos][overall_status] = True
-
-                if pos == "position_1":
-                    # Always move on regardless of result
-                    continue
-
-                elif pos == "position_2":
-                    # If pos2 is unacceptable → shot is unacceptable; stop here
-                    if overall_status == "unacceptable":
-                        final_form_status = "unacceptable"
-                        break
+                
+                # Store latest result for this position
+                latest_position_results[pos] = overall_status
+                
+                # Track best status achieved for each joint (if ever acceptable, keep it as acceptable)
+                for joint, info in joint_feedback.items():
+                    current_status = info["status"]
+                    if joint not in best_position_details[pos]:
+                        # First time seeing this joint - initialize with current status
+                        best_position_details[pos][joint] = {
+                            "status": current_status,
+                            "color": info["color"]
+                        }
                     else:
-                        continue
-
-                elif pos == "position_3":
-                    # Extract each phase’s result (acceptable / passable / unacceptable)
-                    p1 = [k for k, v in position_results["position_1"].items() if v][0]
-                    p2 = [k for k, v in position_results["position_2"].items() if v][0]
-                    p3 = [k for k, v in position_results["position_3"].items() if v][0]
-
-
-                    #  If pos1 is unacceptable but pos2 & pos3 are passable/acceptable → passable
-                    if p1 == "unacceptable" and p2 in ["passable", "acceptable"] and p3 in ["passable", "acceptable"]:
-                        final_form_status = "passable"
-
-                    # If pos1 is passable/acceptable but pos2 is unacceptable → unacceptable
-                    elif p1 in ["passable", "acceptable"] and p2 == "unacceptable":
-                        final_form_status = "unacceptable"
-
-                    #  If pos3 is unacceptable → form unacceptable
-                    elif p3 == "unacceptable":
-                        final_form_status = "unacceptable"
-
-                    #  If pos3 is passable or acceptable → form passable
-                    elif p3 in ["passable", "acceptable"]:
-                        final_form_status = "passable"
-
-                    #  If all 3 are acceptable → form acceptable
-                    elif all(x == "acceptable" for x in [p1, p2, p3]):
-                        final_form_status = "acceptable"
-
-                    #  If more positions are acceptable than passable → acceptable
-                    else:
-                        all_results = [p1, p2, p3]
-                        if all_results.count("acceptable") > all_results.count("passable"):
-                            final_form_status = "acceptable"
-                        elif all_results.count("passable") >= all_results.count("acceptable"):
-                            final_form_status = "passable"
-                        else:
-                            final_form_status = "unacceptable"
-
-                    break  # Done evaluating all positions
-
-            # Print summary result for the entire form
-            if final_form_status:
-                print(f"\n FINAL FORM OUTPUT: {final_form_status.upper()}")
+                        # Update to better status if current is better
+                        best_status = get_better_status(best_position_details[pos][joint]["status"], current_status)
+                        if best_status != best_position_details[pos][joint]["status"]:
+                            # Update status and color
+                            color_map = {
+                                "acceptable": (0, 255, 0),    # green
+                                "passable": (0, 255, 255),     # yellow
+                                "unacceptable": (0, 0, 255),   # red
+                                "no data": (128, 128, 128)     # gray
+                            }
+                            best_position_details[pos][joint] = {
+                                "status": best_status,
+                                "color": color_map.get(best_status, (128, 128, 128))
+                            }
+                
+                # Track best simultaneous overall status (all key joints at the same time)
+                # This checks if all key joints are acceptable/passable at THIS specific frame
+                current_simultaneous_status = calculate_overall_status_from_joints(joint_feedback)
+                best_simultaneous_overall[pos] = get_better_overall_status(
+                    best_simultaneous_overall[pos], 
+                    current_simultaneous_status
+                )
+                
+                # Continue evaluating all positions - final status will be calculated at end
+                continue
 
 
             # function to draw text
@@ -206,8 +319,8 @@ with mp_pose.Pose(min_detection_confidence=0.5,
             draw_text('R-Shoulder', right_shoulder, angles['right_shoulder'], (255, 0, 255))
 
             
-            # After obtaining joint_feedback from form_analyzer
-            overall_status, joint_feedback = form_analyzer.evaluate_position(smoothed_angles, "position_1")
+            # After obtaining joint_feedback from form_analyzer (for drawing skeleton colors)
+            overall_status, joint_feedback = form_analyzer.evaluate_position(smoothed_angles, "position_1", print_output=False)
 
         # draw the pose skeleton (including colored segments)
             if results.pose_landmarks:

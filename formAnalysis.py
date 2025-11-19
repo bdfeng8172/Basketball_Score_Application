@@ -3,14 +3,10 @@ import numpy as np
 
 class FormAnalysis:
 
-    def __init__(self, evaluation_interval=1.0):
+    def __init__(self):
         # Default tolerances shared across sports
         self.acceptable_std = {"default": 4, "knee": 6}
         self.passable_std = {"default": 10, "knee": 12}
-
-        # Minimum time (in seconds) between evaluations
-        self.evaluation_interval = evaluation_interval
-        self.last_evaluation_time = 0.0
 
         # Placeholder for sport-specific positions
         self.positions = {}
@@ -26,7 +22,7 @@ class FormAnalysis:
             "no data": (128, 128, 128)    # gray
         }
 
-    def evaluate_position(self, smoothed_angles, position_name):
+    def evaluate_position(self, smoothed_angles, position_name, print_output=True):
 
         # Initialize print cooldown if not already set
         if not hasattr(self, "last_print_time"):
@@ -92,25 +88,26 @@ class FormAnalysis:
         # Save result
         self.last_result = (overall, joint_feedback)
 
-        # rate-limit the console output
-        current_time = time.time()
-        if current_time - self.last_print_time >= self.print_cooldown:
-            print(f"\n{position_name.upper()} Evaluation:")
-            for joint, info in joint_feedback.items():
-                status = info["status"]
-                color_name = (
-                    "Green" if status == "acceptable" else
-                    "Yellow" if status == "passable" else
-                    "Red" if status == "unacceptable" else "Gray"
-                )
-                print(f"  {joint}: {status} ({color_name})")
-            print(f"→ Overall: {overall.upper()}")
-            self.last_print_time = current_time  
+        # rate-limit the console output (only if print_output is True)
+        if print_output:
+            current_time = time.time()
+            if current_time - self.last_print_time >= self.print_cooldown:
+                print(f"\n{position_name.upper()} Evaluation:")
+                for joint, info in joint_feedback.items():
+                    status = info["status"]
+                    color_name = (
+                        "Green" if status == "acceptable" else
+                        "Yellow" if status == "passable" else
+                        "Red" if status == "unacceptable" else "Gray"
+                    )
+                    print(f"  {joint}: {status} ({color_name})")
+                print(f"→ Overall: {overall.upper()}")
+                self.last_print_time = current_time  
 
         return overall, joint_feedback
 
 
 
 
-#code has to pass to the next position consecutively even if the previous position was not acceptable
-# currently, the code only evaluates every second, so it may skip some positions if the user moves too quickly
+# Evaluations happen every frame - no time-based cooldown or skipping
+# This ensures all acceptable/passable angles are detected in real-time
